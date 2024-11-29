@@ -1,3 +1,11 @@
+## Modifying the Arduino Sketch to Implement Raphnet Conversions
+
+To incorporate the logic from Raph's functions into the Arduino's code, we focus on the `gc_to_64()` function where the transformation of GameCube stick values to N64 values occurs. We've integrated the `calb` and `gamecubeXYtoN64` functions to handle the conversion logic effectively.
+
+<details>
+  <summary><h3 style="display:inline-block"> Updated Arduino Sketch </h3></summary>
+
+```cpp
 /**
  * Gamecube controller to Nintendo 64 adapter
  * by Andrew Brown
@@ -64,6 +72,108 @@
 #define N64_LOW DDRB |= 0x01
 #define N64_QUERY (PINB & 0x01)
 
+// Define conversion modes
+typedef enum {
+    CONVERSION_MODE_EXTENDED,
+    CONVERSION_MODE_OLD_1v5,
+    CONVERSION_MODE_DEFAULT
+} ConversionMode;
+
+// Configuration structure
+typedef struct {
+    ConversionMode conversion_mode;
+    bool deadzone_enabled;
+} ConversionConfig;
+
+// Global variables for stick origin and conversion configuration
+static char gc_x_origin = 0;
+static char gc_y_origin = 0;
+ConversionConfig g_conversion_config = {CONVERSION_MODE_DEFAULT, false};
+
+// Function to calibrate the input
+int calb(char orig, unsigned char val, ConversionConfig config) {
+    short tmp;
+    long mult = 26000; // Default multiplier
+    char dz = 0;
+
+    if (config.conversion_mode == CONVERSION_MODE_OLD_1v5) {
+        mult = 25000;
+    }
+
+    if (config.deadzone_enabled) {
+        dz = 12;
+        mult = 30000;
+        if (config.conversion_mode == CONVERSION_MODE_OLD_1v5) {
+            mult = 29000;
+        }
+    }
+
+    tmp = (signed char)(val ^ 0x80) - orig;
+
+    if (dz) {
+        if (tmp > 0) {
+            if (tmp < dz) {
+                tmp = 0;
+            } else {
+                tmp -= dz;
+            }
+        } else if (tmp < 0) {
+            if (tmp > -dz) {
+                tmp = 0;
+            } else {
+                tmp += dz;
+            }
+        }
+    }
+
+    if (config.conversion_mode != CONVERSION_MODE_EXTENDED) {
+        tmp = tmp * mult / 32000L;
+    }
+
+    if (tmp <= -127) tmp = -127;
+    if (tmp > 127) tmp = 127;
+
+    return tmp;
+}
+
+// Function to convert GameCube XY to N64
+void gamecubeXYtoN64(unsigned char x, unsigned char y, char *dst_x, char *dst_y, ConversionConfig config) {
+    unsigned char abs_y, abs_x;
+    long sig_x, sig_y;
+    long sx, sy;
+    int n64_maxval = 80; // Default max value
+
+    long l = 256; // Default correction factor
+
+    if (config.conversion_mode == CONVERSION_MODE_OLD_1v5) {
+        l = 512;
+        n64_maxval = 127;
+    }
+
+    sig_x = calb(gc_x_origin, x, config);
+    sig_y = calb(gc_y_origin, y, config);
+
+    if (config.conversion_mode == CONVERSION_MODE_EXTENDED) {
+        *dst_x = sig_x;
+        *dst_y = sig_y;
+        return;
+    }
+
+    abs_y = abs(sig_y);
+    abs_x = abs(sig_x);
+
+    sx = sig_x + sig_x * abs_y / l;
+    sy = sig_y + sig_y * abs_x / l;
+
+    if (sx <= -n64_maxval) sx = -n64_maxval;
+    if (sx > n64_maxval) sx = n64_maxval;
+    if (sy <= -n64_maxval) sy = -n64_maxval;
+    if (sy > n64_maxval) sy = n64_maxval;
+
+    *dst_x = sx;
+    *dst_y = sy;
+}
+
 // 8 bytes of data that we get from the controller. This is a global
 // variable (not a struct definition)
 static struct {
@@ -100,71 +210,71 @@ static void get_n64_command();
 
 #include "crc_table.h"
 
-void setup()
+void setup() 
 {
-  Serial.begin(115200);
+    Serial.begin(115200);
 
-  Serial.println();
-  Serial.println("Code has started!");
-  Serial.flush();
+    Serial.println();
+    Serial.println("Code has started!");
+    Serial.flush();
 
   // Status LED
-  digitalWrite(13, LOW);
-  pinMode(13, OUTPUT);
+    digitalWrite(13, LOW);
+    pinMode(13, OUTPUT);
 
-  // Communication with gamecube controller on this pin
-  // Don't remove these lines, we don't want to push +5V to the controller
-  digitalWrite(GC_PIN, LOW);  
-  pinMode(GC_PIN, INPUT);
+// Communication with gamecube controller on this pin
+// Don't remove these lines, we don't want to push +5V to the controller
+    digitalWrite(GC_PIN, LOW);  
+    pinMode(GC_PIN, INPUT);
 
-  // Communication with the N64 on this pin
-  digitalWrite(N64_PIN, LOW);
-  pinMode(N64_PIN, INPUT);
+// Communication with the N64 on this pin
+    digitalWrite(N64_PIN, LOW);
+    pinMode(N64_PIN, INPUT);
 
-  noInterrupts();
-  init_gc_controller();
+    noInterrupts();
+    init_gc_controller();
 
-  do {
+    do {
       // Query for the gamecube controller's status. We do this
       // to get the 0 point for the control stick.
-      unsigned char command[] = {0x40, 0x03, 0x00};
-      gc_send(command, 3);
-      // read in data and dump it to gc_raw_dump
-      gc_get();
-      interrupts();
-      zero_x = gc_status.stick_x;
-      zero_y = gc_status.stick_y;
-      Serial.print("GC zero point read: ");
-      Serial.print(zero_x, DEC);
-      Serial.print(", ");
-      Serial.println(zero_y, DEC);
-      Serial.flush();
-      
+        unsigned char command[] = {0x40, 0x03, 0x00};
+        gc_send(command, 3);
+        // read in data and dump it to gc_raw_dump
+        gc_get();
+        interrupts();
+        zero_x = gc_status.stick_x;
+        zero_y = gc_status.stick_y;
+        Serial.print("GC zero point read: ");
+        Serial.print(zero_x, DEC);
+        Serial.print(", ");
+        Serial.println(zero_y, DEC);
+        Serial.flush();
+
       // some crappy/broken controllers seem to give bad readings
       // occasionally. This is a cheap hack to keep reading the
       // controller until we get a reading that is less erroneous.
-  } while (zero_x == 0 || zero_y == 0);
-  
+    } while (zero_x == 0 || zero_y == 0);
+    
 }
 
-static void init_gc_controller()
+static void init_gc_controller() 
 {
   // Initialize the gamecube controller by sending it a null byte.
   // This is unnecessary for a standard controller, but is required for the
   // Wavebird.
-  unsigned char initialize = 0x00;
-  gc_send(&initialize, 1);
+    unsigned char initialize = 0x00;
+    gc_send(&initialize, 1);
 
   // Stupid routine to wait for the gamecube controller to stop
   // sending its response. We don't care what it is, but we
   // can't start asking for status if it's still responding
-  int x;
-  for (x=0; x<64; x++) {
+    int x;
+    for (x=0; x<64; x++) {
       // make sure the line is idle for 64 iterations, should
       // be plenty.
-      if (!GC_QUERY)
-          x = 0;
-  }
+        if (!GC_QUERY)
+            x = 0;
+    }
 }
 
 /**
@@ -173,9 +283,9 @@ static void init_gc_controller()
  * This function is where the translation happens from gamecube buttons to N64
  * buttons
  */
-static void gc_to_64()
+static void gc_to_64() 
 {
-    // Clear out the buffer
+        // Clear out the buffer
     memset(n64_buffer, 0, sizeof(n64_buffer));
 
     // First byte in n64_buffer should contain:
@@ -188,7 +298,7 @@ static void gc_to_64()
     n64_buffer[0] |= (gc_status.data2 & 0x0C)     ; // D pad up and down
     n64_buffer[0] |= (gc_status.data2 & 0x02) >> 1; // D-pad Right -> Dright
     n64_buffer[0] |= (gc_status.data2 & 0x01) << 1; // D-pad Left -> Dleft
-
+    
     // Second byte to N64 should contain:
     // 0, 0, L, R, Cup, Cdown, Cleft, Cright
     n64_buffer[1] |= (gc_status.data2 & 0x10) << 1; // Z -> L
@@ -205,9 +315,9 @@ static void gc_to_64()
     n64_buffer[1] |= (gc_status.data1 & 0x08) >> 2; // Y -> Cleft
     n64_buffer[1] |= (gc_status.data1 & 0x04) >> 2; // X -> Cright
 
-    // C buttons are tricky, translate the C stick values to determine which C buttons are "pressed"
+// C buttons are tricky, translate the C stick values to determine which C buttons are "pressed"
     if (gc_status.cstick_x < 0x50) {
-        // C-left
+        // C-left   
         n64_buffer[1] |= 0x02;
     }
     if (gc_status.cstick_x > 0xB0) {
@@ -223,24 +333,14 @@ static void gc_to_64()
         n64_buffer[1] |= 0x08;
     }
 
-    // Control sticks: Convert GC stick values to N64 expected values
-    // Third byte: Control Stick X position
-    n64_buffer[2] = (int8_t)(gc_status.stick_x - zero_x);
-    // Fourth byte: Control Stick Y Position
-    n64_buffer[3] = (int8_t)(gc_status.stick_y - zero_y);
+// Define or obtain the current conversion configuration
+ConversionConfig current_config = {
+    .conversion_mode = CONVERSION_MODE_DEFAULT, // or any other mode you want to use
+    .deadzone_enabled = false // or true, depending on your needs
+};
 
-    // Optional alternative curve for control stick input
-    #if 0
-    // Uncomment this block to apply a slight curve to the input mappings
-    // plot [-128:128] x, x**3 * 0.000031 + x/2 to see the effect
-    long int stick = gc_status.stick_x - zero_x;
-    n64_buffer[2] = (int8_t)(stick * stick * stick * 0.000031 + stick * 0.5);
-
-    stick = gc_status.stick_y - zero_y;
-    n64_buffer[3] = (int8_t)(stick * stick * stick * 0.000031 + stick * 0.5);
-    #endif
-}
-
+// Convert GC stick values to N64 expected values using conversion methods
+gamecubeXYtoN64(gc_status.stick_x, gc_status.stick_y, (char *)&n64_buffer[2], (char *)&n64_buffer[3], current_config);
 /**
  * This sends the given byte sequence to the controller
  * length must be at least 1
@@ -421,7 +521,7 @@ inner_loop:
                 N64_HIGH;
 
                 // nop block 2
-                // we'll wait only 2us to sync up with both conditions
+               // we'll wait only 2us to sync up with both conditions
                 // at the bottom of the if statement
                 asm volatile ("nop\nnop\nnop\nnop\nnop\n"  
                               "nop\nnop\nnop\nnop\nnop\n"  
@@ -607,7 +707,7 @@ static int gc_get()
     return retval;
 }
 
-static void print_gc_status()
+static void print_gc_status() 
 {
     Serial.println();
     Serial.print("Start: ");
@@ -659,7 +759,7 @@ static void print_gc_status()
 }
 
 static bool rumble = false;
-void loop()
+void loop() 
 {
     int status;
     unsigned char data, addr;
@@ -848,7 +948,7 @@ void loop()
   * All data is raw dumped to the n64_raw_dump array, 1 bit per byte, except
   * for the command byte, which is placed all packed into n64_command
   */
-static void get_n64_command()
+static void get_n64_command() 
 {
     int bitcount;
     char *bitbin = n64_raw_dump;
@@ -858,7 +958,7 @@ static void get_n64_command()
 
     bitcount = 8;
 
-    // wait to make sure the line is idle before
+    // wait to make sure the line is idle before 
     // we begin listening
     for (idle_wait=32; idle_wait>0; --idle_wait) {
         if (!N64_QUERY) {
@@ -867,79 +967,101 @@ static void get_n64_command()
     }
 
 read_loop:
-        // wait for the line to go low
-        while (N64_QUERY){}
+    // wait for the line to go low
+    while (N64_QUERY){}
 
-        // wait approx 2us and poll the line
-        asm volatile (
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                );
-        if (N64_QUERY)
-            n64_command |= 0x01;
+    // wait approx 2us and poll the line
+    asm volatile (
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+    );
+    if (N64_QUERY)
+        n64_command |= 0x01;
 
-        --bitcount;
-        if (bitcount == 0)
-            goto read_more;
+    --bitcount;
+    if (bitcount == 0)
+        goto read_more;
 
-        n64_command <<= 1;
+    n64_command <<= 1;
 
-        // wait for line to go high again
-        // I don't want this to execute if the loop is exiting, so
-        // I couldn't use a traditional for-loop
-        while (!N64_QUERY) {}
-        goto read_loop;
+    // wait for line to go high again
+    // I don't want this to execute if the loop is exiting, so
+    // I couldn't use a traditional for-loop
+    while (!N64_QUERY) {}
+    goto read_loop;
 
 read_more:
-        switch (n64_command)
-        {
-            case (0x03):
-                // write command
-                // we expect a 2 byte address and 32 bytes of data
-                bitcount = 272 + 1; // 34 bytes * 8 bits per byte
-                //Serial.println("command is 0x03, write");
-                break;
-            case (0x02):
-                // read command 0x02
-                // we expect a 2 byte address
-                bitcount = 16 + 1;
-                //Serial.println("command is 0x02, read");
-                break;
-            case (0x00):
-            case (0x01):
-            default:
-                // get the last (stop) bit
-                bitcount = 1;
-                break;
-        }
+    switch (n64_command)
+    {
+        case (0x03):
+            // write command
+            // we expect a 2 byte address and 32 bytes of data
+            bitcount = 272 + 1; // 34 bytes * 8 bits per byte
+            //Serial.println("command is 0x03, write");
+            break;
+        case (0x02):
+            // read command 0x02
+            // we expect a 2 byte address
+            bitcount = 16 + 1;
+            //Serial.println("command is 0x02, read");
+            break;
+        case (0x00):
+        case (0x01):
+        default:
+            // get the last (stop) bit
+            bitcount = 1;
+            break;
+    }
 
-        // make sure the line is high. Hopefully we didn't already
-        // miss the high-to-low transition
-        while (!N64_QUERY) {}
+    // make sure the line is high. Hopefully we didn't already
+    // miss the high-to-low transition
+    while (!N64_QUERY) {}
 read_loop2:
-        // wait for the line to go low
-        while (N64_QUERY){}
+    // wait for the line to go low
+    while (N64_QUERY){}
 
-        // wait approx 2us and poll the line
-        asm volatile (
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                      "nop\nnop\nnop\nnop\nnop\n"  
-                );
-        *bitbin = N64_QUERY;
-        ++bitbin;
-        --bitcount;
-        if (bitcount == 0)
-            return;
+    // wait approx 2us and poll the line
+    asm volatile (
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\n"
+    );
+    *bitbin = N64_QUERY;
+    ++bitbin;
+    --bitcount;
+    if (bitcount == 0)
+        return;
 
-        // wait for line to go high again
-        while (!N64_QUERY) {}
-        goto read_loop2;
+    // wait for line to go high again
+    while (!N64_QUERY) {}
+    goto read_loop2;
 }
+```
+</details>
+
+\
+The modified version of the Arduino sketch includes several key updates:
+
+- **Conversion Modes**: Introduced a `ConversionConfig` structure to manage different conversion modes and deadzone settings.
+- **Calibration and Conversion**: The `calb` function now uses the `ConversionConfig` to adjust stick values based on the chosen mode and deadzone settings.
+- **`gamecubeXYtoN64` Function**: This function now transforms GameCube stick values to N64 values using the updated calibration logic, considering conversion modes and constraints.
+
+### Key Changes:
+- **Conversion Logic**: Enhanced the conversion logic to support multiple modes and deadzone configurations, improving adaptability to different controllers and user preferences.
+- **Structure for Configuration**: Added a structured approach to handle conversion settings, making the code more modular and easier to adjust.
+
+### Primary References:
+- [Raph's Website](https://www.raphnet.net/electronique/gc_to_n64/index_en.php)
+- [Raph's GitHub](https://github.com/raphnet/gc_to_n64/blob/master/gamecube_mapping.c)
+- [Jodie's GitHub](https://github.com/joer456/Gamecube-N64-Controller/blob/master/gamecube.ino)
+
+### Secondary References:
+- [ElectroModder's Website](https://electromodder.co.uk/) includes great functions for ESS adapter conversion.
+- [Skuzee's ESS Adapter](https://github.com/Skuzee/ESS-Adapter) could potentially be referenced as well for functions and values.

@@ -1,3 +1,8 @@
+=========
+Note, please read GCtoN64CurveConversion.md for an explanation of the changes made to theoretically add Raphnet curves to this project. Conversion code was generated using an LLM.
+=========
+
+
 ==================================
 N64 to Gamecube Controller Adapter
 ==================================
